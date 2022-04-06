@@ -1,0 +1,478 @@
+---
+title: "PSTAT 131 Final Project"
+author: "Tanner Berney 7215445, Taking Class for 131 Credit"
+date: "06/11/2021"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Introduction
+
+For this project, the goal is to create, analyze and understand what went wrong in the prediction of the 2016 Presidential election. Since there are so many different factors that play a part in individual voter behavior, it can be very difficult to predict. Using the machine learning skills I have been taught, I have prepared a report on the 2016 Presidential election.
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, 
+                      cache = T,
+                      fig.align = 'center',
+                      fig.height = 4, 
+                      fig.width = 4)
+
+library(pander)
+library(tidyverse)
+library(ggmap)
+library(modelr)
+library(maps)
+library(dplyr)
+library(tidyr)
+library(dendextend)
+library(kableExtra)
+library(ggplot2)
+library(cluster)
+library(readr)
+library(ISLR)
+library(tree)
+library(maptree)
+library(glmnet)
+library(ROCR)
+library(class)
+library(randomForest)
+library(gbm)
+```
+# 1. What makes voter behavior prediction (and thus election forecasting) a hard problem?
+
+Predicting voting behavior and forecasting an election is a hard problem to solve because of all of the variables that effect voters in the time between the day they are polled and the actual election day. It's important to note that election data is derived from poll dates which may be months before the election. In the time between the polls and election day many measurable variables, such as a change in employment, can effect voting intention. There are also changes that cannot be measured, such as less tangible effects on the economy or successful campaign ads, which can sway voter intention. Additionally, polls contain many errors that stem from the regional level to the state level, and eventually effect the national level. Thus, they can create large prediction errors at the national level because of their ladder like effect. 
+
+# 2. What was unique to Nate Silver's approach in 2012 that allowed him to achieve good predictions?
+
+Silver's approach in 2012 was unique because he used a full range of probabilities for each day prior to the election, rather than maximizing the probabilities. Silver utilized models of previous days that reported the actual voting intentions of voters to calculate the probability of shifts in voting intentions among voters. With these calculations, Silver was able to derive a model that utilized time series to predict voter data by simulating the model to election day. The model runs simulations forward in time to election day under the assumption that the starting point of the simulation is based on the most recent polling data. With this data, the model predicts state and national levels. As time between polls and election day decreases, Silver was able to increase the accuracy of his model by constantly updating the model with more accurate and up to date data. The variance of the true voting intention began to decrease drastically as election day came closer because there was more accurate data and less time for measurable and immeasurable variables to effect voting intentions. 
+
+# 3. What went wrong in 2016? What do you think should be done to make future predictions better?
+
+All poles have some type of error, either from statistical noise or some factor that is difficult to measure, such as nonresponse bias. However, this is a much anticipated error in poles, so precautions to account for this error are already a part of the polling process (aggregated polls throughout a state). In the 2016 election, the state polls and national poles that are based off of them, all missed in the same direction. They all predicted that Clinton had a larger lead over Trump than she actually did. Because the poles missed in the same direction, it is believed that a systematic polling error caused the prediction inaccuracy. Furthermore, the states that miscalculated were mainly swing states. In most of these states, such as Iowa, Minnesota, Ohio, ect., Trump was predicted to lose, but he actually won. The reason behind this is most likely due to the fact that a large proportion of Trump voters did not tell the truth on the polls because they did not want to admit that they were Trump supporters. Thus, a lot of polling error occured due to bias during polls. In order to improve the accuracy of poles, there should be an anonymous aspect of poles so that people are not scared to tell the truth in poles. 
+
+
+```{r,message=F}
+## set the working directory as the file location
+setwd(getwd())
+## put the data folder and this handout file together.
+## read data and convert candidate from string to factor
+election.raw <- read_delim("data/election/election.csv", delim = ",") %>% mutate(candidate=as.factor(candidate))
+
+census_meta <- read_delim("data/census/metadata.csv", delim = ";", col_names = FALSE) 
+census <- read_delim("data/census/census.csv", delim = ",") 
+```
+
+# 4 Data Wrangling 
+
+```{r}
+#4. Report the dimension of election.raw after removing rows with fips=2000. Provide a reason for excluding them. Please make sure to use the same name election.raw before and after removing those observations.
+election.raw <- election.raw %>% filter(fips!=2000)
+invisible(dim(election.raw))
+```
+
+The dimension of election.raw is (18345,5). When fips is set to the value 2000, it generates all the observations with a county value of "NA". The county variable should be only be true in national and state observations where the fips variable is denoted by either "US" or the name of the state, and it should not be true in the county observations where the fips variable is denoted by a number value. 
+
+\newpage
+
+```{r}
+# Federal-level summary into a `election_federal`.
+election_federaal <- election.raw %>% filter(fips == "US")
+```
+  
+```{r}
+# State-level summary into a `election_state`.
+election_state <- election.raw %>% filter(is.na(county)) %>%
+  filter(!fips=="US")
+```
+    
+```{r}
+# Only county-level data is to be in `election`.
+election <- election.raw %>% filter(!is.na(county))
+election$fips <- as.numeric(election$fips)
+```
+    
+
+```{r}
+# 6. How many named presidential candidates were there in the 2016 election? Draw a bar chart of all votes received by each candidate. You can split this into multiple plots or may prefer to plot the results on a log scale. Either way, the results should be clear and legible!
+president <- data.frame(candidate=election_federaal$candidate,
+                        votes = election_federaal$votes)
+president.plot <- ggplot(president, aes(x =candidate,
+                          y=log(votes))) + geom_bar(stat = 'identity',fill="red") + 
+                  labs(title = 'Barplot of votes per candidate',
+                  x="Presidential Candidate",y="Log(votes per candidate)") + theme(axis.text.x = element_text(angle=90)) 
+                                                          
+president.plot
+  
+```
+
+In the 2016 election there was 31 named candidates and there is a tally for all votes that did not get received by any of these candidates, so a total of 32 candidates. 
+
+```{r}
+# 7.  Create variables county_winner and state_winner by taking the candidate with the highest proportion of votes. Hint: to create county_winner, start with election, group by fips, compute total votes, and pct = votes/total. Then choose the highest row using top_n (variable state_winner is similar).
+county_winner <- election %>% group_by(fips) %>%
+  mutate(total=sum(votes)) %>% mutate(pct=votes/total) %>%
+  top_n(1,wt=pct)
+
+state_winner <- election_state %>% group_by(fips) %>%
+  mutate(total = sum(votes)) %>% mutate(pct=votes/total) %>%
+  top_n(1,wt=pct)
+```
+
+
+# 5 Visualization
+
+Below I have created five different plots. The first plot is the US colored by states. The second plot is the US colored by county in each state. The third plot is the results for the 2016 presidential election by state. The fourth plot is the results for the 2016 presidential election by county. In the final plot I created my own visualization from the data.
+```{r, fig.width = 8, fig.height = 8}
+states <- map_data("state")
+
+ggplot(data = states) + 
+  geom_polygon(aes(x = long, y = lat, fill = region, group = group), color = "white") + 
+  coord_fixed(1.3) +
+  guides(fill=FALSE) + ggtitle("State Map")  # color legend is unnecessary and takes too long
+```
+
+```{r, fig.width = 8, fig.height = 8}
+# 8. Draw county-level map by creating counties = map_data("county"). Color by county
+counties <- map_data('county')
+
+ggplot(counties) + geom_polygon(aes(x=long,y=lat,fill=subregion, group=group),color = 'white') + 
+  coord_fixed(1.3) + 
+  guides(fill=FALSE) + ggtitle("County Map")
+```
+
+```{r,message=F, fig.width = 8, fig.height = 8}
+# 9.  Now color the map by the winning candidate for each state. First, combine states variable and state_winner we created earlier using left_join(). Note that left_join() needs to match up values of states to join the tables. A call to left_join() takes all the values from the first table and looks for matches in the second table. If it finds a match, it adds the data from the second table; if not, it adds missing values. Here, we'll be combing the two datasets based on state name. However, the state names are in different formats in the two tables: e.g. AZ vs. arizona. Before using left_join(), create a common column by creating a new column for states named fips = state.abb[match(some_column, some_function(state.name))]. Replace some_column and some_function to complete creation of this new column. Then left_join(). Your figure will look similar to state_level New York Times map.
+states <- states %>% mutate(fips = state.abb[match(region, tolower(state.name))])
+result <- left_join(state_winner, states)
+
+ggplot(result) + scale_fill_brewer(palette = "Set1") +
+  geom_polygon(aes(x=long,y=lat,
+                   fill=candidate,
+                   group=fips),color="white") +
+  coord_fixed(1.3) + guides(fill=FALSE) + ggtitle("Winning Canidate for Each State")
+```
+
+```{r, warning = F,message=F, fig.width = 8, fig.height = 8}
+# 10. The variable county does not have fips column. So we will create one by pooling information from maps::county.fips. Split the polyname column to region and subregion. Use left_join() combine county.fips into county. Also, left_join() previously created variable county_winner. Your figure will look similar to county-level New York Times map.
+county.fips <- maps::county.fips %>% separate(polyname, c("region", "subregion"), ",")
+counties <- left_join(counties, county.fips, by=c("region", "subregion"))
+county_winner$fips <- as.integer(county_winner$fips)
+counties <- left_join(counties, county_winner,by="fips")
+
+ggplot(data=counties) + scale_fill_brewer(palette="Set1") +
+  geom_polygon(aes(x=long,y=lat,
+                   fill=candidate, group = group),
+               color = "white") +
+  coord_fixed(1.3) + guides(fill=FALSE) + ggtitle("Winning Canidate for Each County")
+```
+
+
+```{r, fig.width = 5, fig.height = 5}
+# 11. Create a visualization of your choice using census data. Many exit polls noted that demographics played a big role in the election. Use this Washington Post article and this R graph gallery for ideas and inspiration.
+
+unemployment_demographics <- census %>% na.omit %>% mutate(Minority = (Hispanic + Black + Native + Asian + Pacific)) %>% select(-c(Hispanic, Black, Native, Asian, Pacific)) %>% select(c(State, Minority, Unemployment)) %>% group_by(State) %>% arrange(Unemployment) %>% summarise_at(vars(Minority:Unemployment), list(sum))
+
+ggplot(unemployment_demographics, aes(x=Unemployment, y=Minority)) + 
+  geom_point() + ggtitle("Unemployment v.s. Minority by State")
+```
+For my visualization I decided to model unemployment demographics by minority in each state. It shows that states with higher rates of minorities have a much larger value for unemployment.
+    
+# 6 Data Cleaning
+    
+Since the current data contains high resolution information, I aggregate it to help the data make more sense. I took out some columns of data after mutating them into a new column called minority. I also removed some variables that were not needed such as Walk, PublicWork, and Construction. The resulting data set is an aggregated data frame that contains the variables with the weighted sum computed for each. We do this because the electoral college gives weights to votes differently depending on which state they came from. Below are the first few rows of census.ct.
+   
+```{r}
+# 12. The census data contains high resolution information (more fine-grained than county-level). In this problem, we aggregate the information into county-level data by computing TotalPop-weighted average of each attributes for each county. Create the following variables:
+# Clean census data census.del: start with census, filter out any rows with missing values, convert {Men, Employed, Citizen} attributes to percentages (meta data seems to be inaccurate), compute Minority attribute by combining {Hispanic, Black, Native, Asian, Pacific}, remove these variables after creating Minority, remove {Walk, PublicWork, Construction}. Many columns seem to be related, and, if a set that adds up to 100%, one column will be deleted.
+
+census.del <- census %>% drop_na() %>% mutate(Men = (Men/TotalPop)*100) %>% mutate(Employed = (Employed/TotalPop)*100) %>%
+  mutate(Citizen = (Citizen/TotalPop)*100) %>% mutate(Minority = (Hispanic + Black + Native + Asian + Pacific)) %>% select(-c(Hispanic, Black, Native, Asian, Pacific)) %>% select(-c(Walk, PublicWork, Construction)) 
+```
+   
+
+    
+```{r}
+# Sub-county census data, census.subct: start with census.del from above, group_by() two attributes {State, County}, use add_tally() to compute CountyTotal. Also, compute the weight by TotalPop/CountyTotal.
+census.subct <- census.del %>% group_by(State,County) %>% add_tally(TotalPop,  name = 'CountyTotal') %>% 
+  mutate(PopWt = TotalPop/CountyTotal)
+```
+    
+
+```{r,warning=F}
+# County census data, census.ct: start with census.subct, use summarize_at() to compute weighted sum
+census.ct <- census.subct %>% summarise_at(vars(Men:Minority), funs(weighted.mean(., PopWt)))
+```
+    
+```{r}
+census.ct[1:8] %>% head(5) %>% pander()
+```
+
+# 7 Dimensionality Reduction
+
+I decided to center and scale the features prior to performing PCA so that the data is normalized and all variables in our data have the same standard deviation and weight. Once we have normalized the data, the PCA can much more easily calculate the relevant axes. We want to consider variables that are equally weighted, and our calculation is very sensitive to weights. Thus, we must center and scale the features of our census.ct variables because they have a range of weighted averages.The three features with the largest absolute values in PC1 for county are IncomePerCap, ChildPoverty, and Poverty. In PC1 for sub-county those three features are IncomePerCap, Professional, and Poverty. The features that have opposite signs are: Poverty and IncomePerCap. The opposite signs mean that the correlation between them and the other features is negative. As the positive features increase the negative features will decrease, and vice versa. This makes sense because if incomePerCap is low, the poverty rate will be higher and the same can be said when incomePerCap is high, the poverty rate will be lower.
+```{r, fig.width = 5, fig.height = 5}
+# 13.  Run PCA for both county & sub-county level data. Save the first two principle components PC1 and PC2 into a two-column data frame, call it ct.pc and subct.pc, respectively. Discuss whether you chose to center and scale the features before running PCA and the reasons for your choice. What are the three features with the largest absolute values of the first principal component? Which features have opposite signs and what does that mean about the correlation between these features?
+set.seed(1)
+pca.county <- prcomp(census.ct[,3:28],scale=T,center=T)
+pca.subcounty <- prcomp(census.subct[,3:31],scale=T,center=T)
+ct.pc <- data.frame(pca.county$rotation[,1:2])
+subct.pc <- data.frame(pca.subcounty$rotation[,1:2])
+subct.top <- order(abs(subct.pc$PC1), decreasing = TRUE)[1:3]
+kable(subct.pc[subct.top,],caption ="3 features with largest absolute values of PC1 for sub-county") %>% 
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width=FALSE)
+ct.top <- order(abs(ct.pc$PC1), decreasing = TRUE)[1:3]
+kable(ct.pc[ct.top,],caption ="3 features with largest absolute values of PC1 for county") %>% 
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width=FALSE)
+```
+
+```{r,fig.width = 5, fig.height = 5}
+# 14. Determine the minimum number of PCs needed to capture 90% of the variance for both the county and sub-county analyses. Plot the proportion of variance explained and cumulative variance explained for both county and sub-county analyses.
+#County
+par(mfrow=c(1, 2))
+pr.var <- (pca.county$sdev)^2
+pve = pr.var/sum(pr.var)
+cumulative_pve <-cumsum(pve)
+min_ct_pc <- min(which(cumsum(pve)>=0.9))
+plot(pve, xlab="Principal Component", ylab="County: Proportion of Variance Explained ", ylim=c(0,1),type='b')
+plot(cumulative_pve, xlab="Principal Component ",ylab="County: Cumulative Proportion of Variance Explained ", ylim=c(0,1),type='b')
+#SubCounty
+par(mfrow=c(1, 2))
+pr.var <- (pca.subcounty$sdev)^2
+pve = pr.var/sum(pr.var)
+cumulative_pve <-cumsum(pve)
+min_subct_pc <- min(which(cumsum(pve)>=0.9))
+plot(pve, xlab="Principal Component", ylab="SubCounty: Proportion of Variance Explained ", ylim=c(0,1),type='b')
+plot(cumulative_pve, xlab="Principal Component ",ylab="SubCounty: Cumulative Proportion of Variance Explained ", ylim=c(0,1),type='b')
+```
+We need the first 13 PCs to capture 90% of the variance for the county and need at least 16 PCs to capture 90% of the variance for the subcounty. 
+
+# 8 Clustering
+
+```{r,warning=F,fig.width = 5, fig.height = 5}
+# 15. With census.ct, perform hierarchical clustering with complete linkage. Cut the tree to partition the observations into 10 clusters. Re-run the hierarchical clustering algorithm using the first 5 principal components of ct.pc as inputs instead of the originald features. Compare and contrast the results. For both approaches investigate the cluster that contains San Mateo County. Which approach seemed to put San Mateo County in a more appropriate clusters? Comment on what you observe and discuss possible explanations for these observations.
+scaled.census.ct <- as.data.frame(scale(census.ct[,-c(1,2)], center = TRUE, scale = TRUE))
+dist.scaled.census.ct <- dist(scaled.census.ct, method = "euclidean")
+set.seed(1)
+# hierarchical clustering with complete linkage 
+ct.hclust <- hclust(dist.scaled.census.ct, method = "complete")
+#dendogram 
+dendogram1 <- as.dendrogram(ct.hclust)
+dendogram1 = color_branches(dendogram1, k=10)
+dendogram1 = color_labels(dendogram1, k=10)
+dendogram1 = set(dendogram1, "labels_cex", 0.5)
+plot(dendogram1, horiz = TRUE, main='Dendogram of census.ct colored by 10 clusters')
+# add a column to census.ct to identify clusters 
+census.ct['Cluster']<-cutree(ct.hclust,10)
+# find out which cluster San Mateo is in 
+#census.ct %>% filter(County =="San Mateo") # Cluster 1
+clusterct <- census.ct %>% filter(Cluster ==1)
+# Principal Component Dendogram 
+scaled.ct.pc <- as.data.frame(scale(pca.county$x[,1:5]), center = TRUE, scale = TRUE)
+dist.scaled.ct.pc <- dist(scaled.ct.pc , method = "euclidean")
+set.seed(1)
+# hierarchical clustering with complete linkage 
+ct.pc.hclust <- hclust(dist.scaled.ct.pc, method = "complete")
+#dendogram 
+dendogram2 <- as.dendrogram(ct.pc.hclust)
+dendogram2 = color_branches(dendogram2, k=10)
+dendogram2 = color_labels(dendogram2, k=10)
+dendogram2 = set(dendogram2, "labels_cex", 0.5)
+plot(dendogram2, horiz = TRUE, main='Dendogram of pc.ct colored by 10 clusters')
+# add a column to ct.pc to identify clusters 
+census.ct['Cluster_PC']<-cutree(ct.pc.hclust,10)
+# find out which cluster San Mateo is in 
+#census.ct %>% filter(County =="San Mateo") # cluster 2
+clust1.pc <- census.ct %>% filter(Cluster_PC ==2)
+```
+Rather than using the original features as inputs, I have decided to perform hierarchical clustering with the first five principal components as the inputs. The second approach using the first 5 PCs seemed to put San Mateo County in a more appropriate cluster. We can see that most of the central region of California is within Cluster 1 for the first hierarchical clustering, but it is not within cluster 2 for the 2nd hierarchical clustering with PCA. When we run using the first five principal components as inputs, we use the highest variance when implementing the data. This process reduces the amount of dimensions in our data, which is important because distance models struggle to accurately predict when the dimensions are particularly high. Using the first five principal components helped to reduce the dimensions and more accurately predict the data which helped to put San Mateo in the appropriate cluster. 
+
+# 9 Classification
+
+```{r}
+tmpwinner <- county_winner %>% ungroup %>%
+  mutate(state = state.name[match(state, state.abb)]) %>%               ## state abbreviations
+  mutate_at(vars(state, county), tolower) %>%                           ## to all lowercase
+  mutate(county = gsub(" county| columbia| city| parish", "", county))  ## remove suffixes
+tmpcensus <- census.ct %>% mutate_at(vars(State, County), tolower)
+
+election.cl <- tmpwinner %>%
+  left_join(tmpcensus, by = c("state"="State", "county"="County")) %>% 
+  na.omit
+
+## save meta information
+election.meta <- election.cl %>% select(c(county, fips, state, votes, pct, total))
+
+## save predictors and class labels
+election.cl = election.cl %>% select(-c(county, fips, state, votes, pct, total))
+```
+
+```{r}
+# After merging the data, partition the result into 80% training and 20% testing partitions.
+set.seed(10) 
+n <- nrow(election.cl)
+in.trn <- sample.int(n, 0.8*n) 
+trn.cl <- election.cl[ in.trn,]
+tst.cl <- election.cl[-in.trn,]
+set.seed(20) 
+nfold <- 10
+folds <- sample(cut(1:nrow(trn.cl), breaks=nfold, labels=FALSE))
+calc_error_rate = function(predicted.value, true.value){
+  return(mean(true.value!=predicted.value))
+}
+records = matrix(NA, nrow=3, ncol=2)
+colnames(records) = c("train.error","test.error")
+rownames(records) = c("tree","logistic","lasso")
+```
+
+```{r,message=F,fig.width = 10, fig.height = 10}
+# 16. Decision tree: train a decision tree by cv.tree(). Prune tree to minimize misclassification error. Be sure to use the folds from above for cross-validation. Visualize the trees before and after pruning. Save training and test errors to records variable. Intepret and discuss the results of the decision tree analysis. Use this plot to tell a story about voting behavior in the US (remember the NYT infographic?)
+tree_opts <- tree.control(nobs = nrow(trn.cl), 
+                          minsize = 5, 
+                          mindev = 0.00001)
+t <- tree(as.factor(candidate) ~ ., data=trn.cl, 
+          control = tree_opts)
+#visualize the tree before pruning
+draw.tree(t, cex = 0.35, digits = 1,nodeinfo = T)
+title("Classification Tree for Election")
+#perform cost-complexity pruning
+set.seed(1)
+cv <- cv.tree(t, rand=folds,FUN=prune.misclass, K=10)
+best.size.cv = cv$size[which.min(cv$dev)]
+t_opt <- prune.misclass(t,best=best.size.cv)
+#visualize tree after pruning
+draw.tree(t_opt, cex=0.8, digits=1,nodeinfo = T)
+title(" CV Classification Tree for Election")
+t.pred.train <- predict(t_opt,trn.cl,type="class")
+t.pred.test <- predict(t_opt,tst.cl,type="class")
+tree.training.error <- calc_error_rate(predicted.value=t.pred.train,true.value =trn.cl$candidate)
+tree.test.error <- calc_error_rate(predicted.value=t.pred.test,true.value =tst.cl$candidate)
+records[1,1:2] <- c(tree.training.error,tree.test.error)
+kable(records[1,1:2])
+```
+Given that the transit rate is less than 1.05%, if the percentage of white people in a county is greater than 48.37%, there is a 92.7% chance that Trump will win that county. However, if percentage of white people is less than 48.73% and the unemployment rate is greater than 10.44%, then there is a 60.6% chance Hillary will win that county. If the transit rate is less than 1.05% and the percentage of white people is less than 48.73% and the unemployment rate is less than 10.44%, then there is a 60.6% chance Hillary will win that county. If the transit rate is more than 1.05% in a county and also is higher than 2.79%, there is a 50.9% chance Hillary will win that county. However, if the transit rate is more than 1.05% but less than 2.79%, and the minority rate is less than 51.18%, there is a 63.4% chance Trump will win that county. 
+
+The first variable that the pruned tree is split on is transit. I believe that the transit variable can be linked to other demographics of voters such as wealth. High usage of the transit system is generally linked to lower-income populations and counties. In these lower-income populations and counties, we expect the majority of voters to vote for Hilary Clinton, thus high transit voters can be linked to Clinton. After the split on transit, the data is split on white. Populations with higher rates of white people are predicted to vote for Donald trump, and with less people are predicted to vote for Hillary. In populations and counties where minority rates are higher, it is predicted that voters are more likely to vote for Hilary Clinton, and in counties where the minority rates are lower, it is predicted that voters will vote for Donald Trump. I assume that this is due to the fact that white voters, who are predicted to vote for Trump, mostly populate most counties that do not have a high minority population. Finally, in populations with higher levels of unemployment, it is predicted that voters are more likely to vote for Hillary and populations with lower levels of unemployment are predicted to vote for Donald.
+
+If we look at the decision tree before pruning the tree, we see that there are 102 terminal nodes that are split on 25 different variables with a misclassification error rate of 0.01059. Performing cost-complexity pruning, the tree is left with only 6 terminal nodes that are split on 4 different variables (transit, white, minority, and unemployment) with a misclassification error of 0.07899. Once we have pruned our tree, we notice that the pruned tree has a higher misclassification error rate than our original tree without pruning. We also note that the pruned tree has a higher false negative rate and a lower false positive rate, and we believe that this is due to over fitting in our model. Our model is capable of classifying correctly, but it struggles to classify non-default values. 
+
+# 9.1 Logistic Regression
+
+```{r, warning = F}
+# 17.  Run a logistic regression to predict the winning candidate in each county. Save training and test errors to records variable. What are the significant variables? Are the consistent with what you saw in decision tree analysis? Interpret the meaning of a couple of the significant coefficients in terms of a unit change in the variables.
+ud.trn.cl <- trn.cl %>% select(-candidate)
+ud.trn.cl.y <- trn.cl$candidate
+ud.tst.cl <- tst.cl %>% select(-candidate)
+ud.tst.cl.y <- tst.cl$candidate
+glm.election.fit <- glm(candidate~., data =  trn.cl, family = "binomial")
+election.fitted.train <- predict(glm.election.fit, ud.trn.cl, type = "response")
+glm.use.trn.cl <- rep("Donald Trump", length(ud.trn.cl.y))
+glm.use.trn.cl[election.fitted.train>0.5] = "Hillary Clinton"
+election.fitted.test <- predict(glm.election.fit, ud.tst.cl, type = "response")
+glm.use.tst.cl <- rep("Donald Trump", length(ud.tst.cl.y))
+glm.use.tst.cl[election.fitted.test>0.5] = "Hillary Clinton"
+#summary(glm.election)
+records[2,1] <- calc_error_rate(glm.use.trn.cl, ud.trn.cl.y)
+records[2,2] <- calc_error_rate(glm.use.tst.cl, ud.tst.cl.y)
+kable(records[1:2,1:2])
+```
+
+If we run our analysis, our regression model indicates that the Citizen, IncomePerCap, Professional, Service, Production, Drive, Employed, PrivateWork, and Unemployment are important predictors as they have a significance level between 0 and 0.001. This is different from my pruned tree, which splits the data based on only four variables; Transit, white, unemployment and Minority. However, I am satisfied with this result because both methods have different requirements. Logistic regression models perform better when there is a linear relationship, but decision trees can easily capture nonlinear classifications. Thus, we understand that the methods should not give the same result. Citizens has a coefficient of 0.1380. For every one unit change in the percentage of United States citizens in the county, the log odds of Hillary Clinton winning the county increases by 0.1380. Drive has a coefficient of -0.2088. For every one unit increase in the percentage of individuals commuting alone in a vehicle in the county, the log odds of Hillary Clinton winning the election decreases by 0.02088, which explains why an increase of one corresponds to a multiplicative change in the odds of e(-0.02088) = 0.9793 . Professional has a coefficient of 0.2918. For every unit of increase in the percentage of employed people in the county, Hillary Clinton increases her chance of winning the county by a multiplicative change in the odds of e(0.2918)=1.338.
+
+# 9.2 LASSO
+
+```{r,message=F}
+# 18. You may notice that you get a warning glm.fit: fitted probabilities numerically 0 or 1 occurred. As we discussed in class, this is an indication that we have perfect separation (some linear combination of variables perfectly predicts the winner). This is usually a sign that we are overfitting. One way to control overfitting in logistic regression is through regularization. Use the cv.glmnet function from the glmnet library to run K-fold cross validation and select the best regularization parameter for the logistic regression with LASSO penalty. Reminder: set alpha=1 to run LASSO regression, set lambda = c(1, 5, 10, 50) * 1e-4 in cv.glmnet() function to set pre-defined candidate values for the tuning parameter lambda. This is because the default candidate values of lambda in cv.glmnet() is relatively too large for our dataset thus we use pre-defined candidate values. What is the optimal value of lambda in cross validation? What are the non-zero coefficients in the LASSO regression for the optimal value of lambda? How do they compare to the unpenalized logistic regression? Save training and test errors to the records variable.
+library(glmnet)
+x <- model.matrix(candidate~., trn.cl)[,-1]
+y <- ifelse(trn.cl$candidate == "Hillary Clinton", 1, 0)
+grid = c(1, 5, 10, 50) * 1e-4
+cv.lasso <- cv.glmnet(x=x,y=y,family="binomial", alpha=1, lambda = grid)
+min.lambda <- cv.lasso$lambda.min # 5e-04
+#Fit the model
+fit <- glmnet(x=x,y=y, alpha = 1, family = "binomial",
+                lambda = min.lambda)
+lasso.coeff <- predict(fit,type="coefficients",s=min.lambda)
+lasso.train.probabilities <- predict(fit,x, type = "response")
+predicted.train.classes <- ifelse(lasso.train.probabilities > 0.5, "Hillary Clinton", "Donald Trump")
+x.test <- model.matrix(candidate ~., tst.cl)[,-1]
+lasso.test.probabilities <- predict(fit,x.test, type = "response")
+predicted.test.classes <- ifelse(lasso.test.probabilities > 0.5, "Hillary Clinton", "Donald Trump")
+# Model accuracy
+lasso.test.err<- calc_error_rate(predicted.test.classes,tst.cl$candidate)
+lasso.train.err<- calc_error_rate(predicted.train.classes,trn.cl$candidate)
+# save errors in records 
+records[3,1] <- lasso.test.err
+records[3,2] <- lasso.train.err
+kable(records)
+```
+
+The optimal value for lambda is 5e-04. The are 23 non-zero coefficients in the LASSO regression: Men, White, Citizen, Income, IncomeErr, IncomePerCap, IncomePerCapErr, Poverty, Professional, Service, Office, Production, Drive, Carpool, Transit, OtherTransp, WorkAtHome, MeanCommute, Employed, PrivateWork, selfeemployed, FamilyWork, and Unemployment. LASSO  has a lower training error compared to logistic however it has a higher test error. 
+
+# 10 ROC Curve
+
+```{r,message=F, fig.height = 5, fig.width = 10}
+# 19.  Compute ROC curves for the decision tree, logistic regression and LASSO logistic regression using predictions on the test data. Display them on the same plot. Based on your classification results, discuss the pros and cons of the various methods. Are the different classifiers more appropriate for answering different kinds of questions about the election?
+library(ggpubr)
+library(MASS)
+pruned.pred.tree <- predict(t_opt, ud.tst.cl, type = "class")
+pred.tree <- prediction(as.numeric(pruned.pred.tree), as.numeric(ud.tst.cl.y))
+pred.logis <- prediction(as.numeric(election.fitted.test), as.numeric(ud.tst.cl.y))
+pred.lasso <- prediction(lasso.test.probabilities, as.numeric(ud.tst.cl.y))
+tree.perf <- performance(pred.tree, measure = "tpr", x.measure = "fpr")
+logis.perf <- performance(pred.logis, measure = "tpr", x.measure = "fpr")
+lasso.perf <- performance(pred.lasso, measure = "tpr", x.measure = "fpr")
+#plotting
+plot(tree.perf, col = "red", lwd = 3, main = "ROC Curves")
+plot(logis.perf, col = "blue",lwd = 3, main = "ROC Curves", add = TRUE)
+plot(lasso.perf, col = "green", lwd = 3, main = "ROC Curves", add = TRUE)
+legend("bottomright" ,legend=c("Decision Tree", "Logistic Regression", "Lasso Logistic Regression"),
+       col=c("red", "blue","green"), lty=1, cex=0.8)
+abline(0,1)
+```
+Looking at the results, we can see that decision trees are very simple to use but do not have the best accuracy.This is due to trees usually having high variance and tend to overfit the data. Any change made to a tree can result in a completely new one. Tree classification works well if the data can easily be split into rectangular regions. Logistic regression is a good tool for classifying two different values. However, if the data is linear or has complete separation, it will be harder to classify the model correctly. Lasso Regression is useful when some predictors are redundant and can be removed. Lasso Regression tends to have a lower variance and does not overfit as much compared to other models. Since it ignores non significant variables, it can be difficult to see if any variables actually play a bigger part in the data.
+
+
+# 11 Taking it Further
+
+I took my research futher by creating models using KNN with the LOOCV procedure and also bagging and creating random forests. After, I compared them both to the logistic regression and decision tree to see how they performed in relation to one another.
+
+```{r}
+set.seed(10)
+K=1:50 
+validation.error=NULL
+for (i in K) {
+  pred.Yval.knn = knn.cv(train=ud.trn.cl, cl=ud.trn.cl.y, k=i)
+  validation.error = c(validation.error, mean(pred.Yval.knn!=ud.trn.cl.y))
+}
+# best number of neighbors
+numneighbor = max(K[validation.error==min(validation.error)])
+#numneighbor #20 
+pred.knn.test = knn(train=ud.trn.cl, test = ud.tst.cl, cl=ud.trn.cl.y, k=numneighbor)
+pred.knn.train = knn(train=ud.trn.cl, test = ud.trn.cl, cl=ud.trn.cl.y, k=numneighbor)
+#error rate
+#calc_error_rate(pred.knn.train,ud.trn.cl.y) # 0.1327362
+#calc_error_rate(pred.knn.test,ud.tst.cl.y) # 0.1317073 
+```
+# 11.1 KNN LOOCV
+
+I used knn.cv to do KNN classification on the training set using the LOOCV procedure. Once I determined that the best k value was 20, I predicted the election results using the training data on both the test and the training data. We see that our error rate for KNN 0.1327362, which is larger than the results for any of the other methods used. This large increase in error rate is likely due to our data being more linear. Also, I am most likely overfitting the data since KNN is nonparametric and has high variance.
+
+```{r}
+# Bagging and RandomForest 
+new.trn.cl = trn.cl %>% mutate(candidate = factor(candidate))
+set.seed(10)
+bag.election = randomForest(candidate ~., data=new.trn.cl, mtry=10, importance=TRUE)
+new.tst.cl = tst.cl %>% mutate(candidate = factor(candidate))
+yhat.bag = predict(bag.election, newdata = new.tst.cl)
+#calc_error_rate(yhat.bag,new.tst.cl$candidate) #0.04552846 
+```
+# 11.2 Random Forest
+
+The randomForest model is the best model when compared to the other models created. It has the lowest test error of 0.04552846. The randomforest is helpful because it tells us additional information about the misclassification rate between candidates. This can be useful if a campaign worker needs to find out which campaigns for some other states need their attention more compared to states where the canidate is predicted to win.  
+
+# 12 Conclusion
+
+Taking a look at the records table, we can see that logistic regression has the lowest test error of 0.0666 compared to the decision tree with 0.0715447 and the lasso logistic regression which is 0.0692182. However, an issue I found when using logistic regression is the problem of perfect separation. This issue is corrected through the regularization method which is related to the issue of bias variance tradeoff. The regularization method tries to reduce variance in the model by minimizing the coefficient to be close to zero. Overall, I think it would actually be best to use LASSO in this case since it solves the issue of perfect separation. I would much rather use lasso logistic regression to classify results of the 2016 US Presidential Election as I believe it is worth the tradeoff. 
+
+After completing my project,  I was able to see the real life implications of data analysis on a large scale. This project showed how using different prediction models can apply to an event as big as the presidential election, which affects the entirety of the United States. However, it is not guaranteed that these models will give us an accurate prediction. As we could see, our logistic regression model predicted Hilary Clinton to win, however Donald Trump won the 2016 presidential election. Some possible causes of this inaccuracy would be overfitting and misclassification errors. In addition to the variables we received from our census data, it would be beneficial in the predicting process if levels of education were also surveyed and included with our data set. This would help us because a person's level of education has a strong influence on how they vote. For example, people with a college education are more likely to be registered Democratic than those without a college education. 
+
